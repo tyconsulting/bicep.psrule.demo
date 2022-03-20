@@ -1,0 +1,196 @@
+parameters:
+- name: templateName
+  displayName: "Template Name"
+  type: string
+
+- name: templateFileDirectory
+  displayName: "Template File Directory"
+  type: string
+
+- name: azureServiceConnection
+  displayName: "Name of the Azure Service Connection"
+  type: string
+
+- name: agentPoolName
+  displayName: "Agent Pool Name"
+  type: string
+  default: "windows-latest"
+
+- name: psRuleBaselineName
+  displayName: "PSRule Baseline Name"
+  type: string
+  default: "Azure.Default"
+
+- name: runPSRuleTests
+  displayName: "Run PSRule Tests"
+  type: boolean
+  default: true
+
+- name: runWhatIfTests
+  displayName: "Run WhatIf Tests"
+  type: boolean
+  default: true
+
+- name: runTemplateValidation
+  displayName: "Run Template Validation"
+  type: boolean
+  default: true
+
+- name: runBicepLinter
+  displayName: "Run Bicep Linter"
+  type: boolean
+  default: true
+
+- name: templateScope
+  displayName: Template Scope
+  type: string
+  default: "resourceGroup"
+  values:
+  - "resourceGroup"
+  - "subscription"
+  - "managementGroup"
+  - "tenant"
+
+- name: azureLocation
+  displayName: "Azure Location. Not required for resource group scope"
+  type: string
+  default: ""
+
+- name: targetName
+  displayName: "Target name. When scope is 'managementGroup' or 'resourceGroup', this is the name of the Management Group or Resource Group."
+  type: string
+  default: ""
+
+stages:
+- stage: test_and_build
+  displayName: "Test and Build"
+  variables:
+    - name: PSRULE_CONFIGURATION_AZURE_BICEP_FILE_EXPANSION
+      value: true
+    - name: PSRULE_INPUT_PATHIGNORE
+      value: bicepconfig.json;modules/
+  jobs:
+  - job: Bicep_Validation
+    displayName: ARM Deployment Validation
+    pool:
+      vmImage: "${{parameters.agentPoolName}}"
+    steps:
+      - task: ps-rule-install@1
+        displayName: "Install PSRule.Rules.Azure PS module"
+        condition: and(succeeded(), eq('${{parameters.runPSRuleTests}}', true))
+        inputs:
+          module: PSRule.Rules.Azure
+          latest: false
+          prerelease: false
+      - powershell: bicep build ${{parameters.templateFileDirectory}}/main.bicep --outfile ${{parameters.templateFileDirectory}}/main.json
+        displayName: "Bicep Linter - ${{parameters.templateName}} template"
+        condition: and(succeeded(), or(eq('${{parameters.runPSRuleTests}}', true), eq('${{parameters.runBicepLinter}}', true)))
+      - task: ps-rule-assert@1
+        displayName: "PSRule validation - ${{parameters.templateName}} Template"
+        condition: and(succeeded(), eq('${{parameters.runPSRuleTests}}', true))
+        continueOnError: true
+        inputs:
+          inputType: repository
+          inputPath: ${{parameters.templateFileDirectory}}/main*.json
+          modules: "PSRule.Rules.Azure"
+          outputFormat: NUnit3
+          outputPath: $(System.DefaultWorkingDirectory)/TEST-${{parameters.templateName}}-template-psrule.xml
+          baseline: "${{parameters.psRuleBaselineName}}"
+      - task: PublishTestResults@2
+        displayName: "Publish PSRule results - ${{parameters.templateName}}"
+        condition: and(succeeded(), eq('${{parameters.runPSRuleTests}}', true))
+        inputs:
+          testRunTitle: "PSRule-${{parameters.templateName}}"
+          testRunner: NUnit
+          testResultsFiles: "$(System.DefaultWorkingDirectory)/TEST-${{parameters.templateName}}-template-psrule.xml"
+          failTaskOnFailedTests: true
+      - task: AzureCLI@2
+        displayName: "Tenant Scope Template Validation - ${{parameters.templateName}}"
+        condition: and(succeeded(), eq('${{parameters.templateScope}}', 'tenant'), eq('${{parameters.runTemplateValidation}}', true))
+        inputs:
+          azureSubscription: "${{parameters.azureServiceConnection}}"
+          scriptType: ps
+          scriptLocation: inlineScript
+          inlineScript: |
+            az deployment tenant validate --location ${{parameters.azureLocation}} --template-file "${{parameters.templateFileDirectory}}/main.bicep" --parameters "${{parameters.templateFileDirectory}}/main.parameters.json"
+      - task: AzureCLI@2
+        displayName: "Management Group Scope Template Validation - ${{parameters.templateName}}"
+        condition: and(succeeded(), eq('${{parameters.templateScope}}', 'managementGroup'), eq('${{parameters.runTemplateValidation}}', true))
+        inputs:
+          azureSubscription: "${{parameters.azureServiceConnection}}"
+          scriptType: ps
+          scriptLocation: inlineScript
+          inlineScript: |
+            az deployment mg validate --location ${{parameters.azureLocation}} --management-group-id ${{parameters.targetName}} --template-file "${{parameters.templateFileDirectory}}/main.bicep" --parameters "${{parameters.templateFileDirectory}}/main.parameters.json"
+      - task: AzureCLI@2
+        displayName: "Subscription Scope Template Validation - ${{parameters.templateName}}"
+        condition: and(succeeded(), eq('${{parameters.templateScope}}', 'subscription'), eq('${{parameters.runTemplateValidation}}', true))
+        inputs:
+          azureSubscription: "${{parameters.azureServiceConnection}}"
+          scriptType: ps
+          scriptLocation: inlineScript
+          inlineScript: |
+            az deployment sub validate --location ${{parameters.azureLocation}} --template-file "${{parameters.templateFileDirectory}}/main.bicep" --parameters "${{parameters.templateFileDirectory}}/main.parameters.json"
+      - task: AzureCLI@2
+        displayName: "Resource Group Scope Template Validation - ${{parameters.templateName}}"
+        condition: and(succeeded(), eq('${{parameters.templateScope}}', 'resourceGroup'), eq('${{parameters.runTemplateValidation}}', true))
+        inputs:
+          azureSubscription: "${{parameters.azureServiceConnection}}"
+          scriptType: ps
+          scriptLocation: inlineScript
+          inlineScript: |
+            az deployment group validate --resource-group ${{parameters.targetName}} --template-file "${{parameters.templateFileDirectory}}/main.bicep" --parameters "${{parameters.templateFileDirectory}}/main.parameters.json"
+      - task: AzureCLI@2
+        displayName: "Tenant Scope What-If - ${{parameters.templateName}}"
+        condition: and(succeeded(), eq('${{parameters.templateScope}}', 'tenant'), eq('${{parameters.runWhatIfTests}}', true))
+        inputs:
+          azureSubscription: "${{parameters.azureServiceConnection}}"
+          scriptType: ps
+          scriptLocation: inlineScript
+          inlineScript: |
+            az deployment tenant what-if --location ${{parameters.azureLocation}} --template-file "${{parameters.templateFileDirectory}}/main.bicep" --parameters "${{parameters.templateFileDirectory}}/main.parameters.json"
+      - task: AzureCLI@2
+        displayName: "Management Group Scope What-If - ${{parameters.templateName}}"
+        condition: and(succeeded(), eq('${{parameters.templateScope}}', 'managementGroup'), eq('${{parameters.runWhatIfTests}}', true))
+        inputs:
+          azureSubscription: "${{parameters.azureServiceConnection}}"
+          scriptType: ps
+          scriptLocation: inlineScript
+          inlineScript: |
+            az deployment mg what-if --location ${{parameters.azureLocation}} --management-group-id ${{parameters.targetName}} --template-file "${{parameters.templateFileDirectory}}/main.bicep" --parameters "${{parameters.templateFileDirectory}}/main.parameters.json"
+      - task: AzureCLI@2
+        displayName: "Subscription Scope What-If - ${{parameters.templateName}}"
+        condition: and(succeeded(), eq('${{parameters.templateScope}}', 'subscription'), eq('${{parameters.runWhatIfTests}}', true))
+        inputs:
+          azureSubscription: "${{parameters.azureServiceConnection}}"
+          scriptType: ps
+          scriptLocation: inlineScript
+          inlineScript: |
+            az deployment sub what-if --location ${{parameters.azureLocation}} --template-file "${{parameters.templateFileDirectory}}/main.bicep" --parameters "${{parameters.templateFileDirectory}}/main.parameters.json"
+      - task: AzureCLI@2
+        displayName: "Resource Group Scope What-If - ${{parameters.templateName}}"
+        condition: and(succeeded(), eq('${{parameters.templateScope}}', 'resourceGroup'), eq('${{parameters.runWhatIfTests}}', true))
+        inputs:
+          azureSubscription: "${{parameters.azureServiceConnection}}"
+          scriptType: ps
+          scriptLocation: inlineScript
+          inlineScript: |
+            az deployment group what-if --resource-group ${{parameters.targetName}} --template-file "${{parameters.templateFileDirectory}}/main.bicep" --parameters "${{parameters.templateFileDirectory}}/main.parameters.json"
+  - job: Publish_Pattern
+    displayName: Publish Pattern
+    pool:
+      vmImage: "${{parameters.agentPoolName}}"
+    dependsOn: Bicep_Validation
+    steps:
+      - task: CopyFiles@2
+        displayName: "Copy Files to Build Artifact Staging Directory"
+        inputs:
+          SourceFolder: "$(Build.SourcesDirectory)"
+          TargetFolder: "$(Build.ArtifactStagingDirectory)"
+          CleanTargetFolder: true
+          OverWrite: true
+      - task: PublishBuildArtifacts@1
+        displayName: "Publish Artifact"
+        inputs:
+          artifactName: "drop"
+          PathtoPublish: "$(Build.ArtifactStagingDirectory)"

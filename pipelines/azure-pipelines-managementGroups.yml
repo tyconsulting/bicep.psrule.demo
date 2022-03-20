@@ -1,0 +1,41 @@
+name: $(BuildDefinitionName)_$(SourceBranchName)_$(Date:yyyyMMdd)$(Rev:.r)
+trigger:
+  branches:
+    include:
+      - master
+  paths:
+    include:
+      - modules/Microsoft.Management/managementGroups
+      - templates/managementGroups
+      - pipelines/azure-pipelines-managementGroups.yml
+      - pipelines/templates/*
+    exclude:
+      - "README.md"
+      - "tests/*"
+pr:
+  branches:
+    include:
+      - master
+      - feature/*
+      - fix/*
+  paths:
+    exclude:
+      - "README.md"
+      - "tests/*"
+variables:
+  location: "australiaeast"
+  es-root-mg-name: "TYANG"
+stages:
+  - template: templates/template-test-and-validate.yml
+    parameters:
+      templateName: "managementGroup"
+      templateFileDirectory: "templates/managementGroups"
+      azureServiceConnection: "mg-canary-tenant-root"
+      agentPoolName: "windows-latest"
+      psRuleBaselineName: "Azure.Default"
+      azureLocation: "$(location)"
+      templateScope: "tenant"
+      runBicepLinter: true
+      runTemplateValidation: true
+      runWhatIfTests: true
+      runPSRuleTests: true

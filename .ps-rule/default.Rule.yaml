@@ -1,0 +1,12 @@
+# Synopsis: psrule baseline for Management Group deployment
+apiVersion: github.com/microsoft/PSRule/v1
+kind: Baseline
+metadata:
+  name: Azure.Default
+spec:
+  rule:
+    # Enable custom rules that don't exist in the baseline
+    exclude:
+      # Ignore the following rules for all resources
+      - Azure.Resource.UseTags
+      - Azure.Template.UseDescriptions
